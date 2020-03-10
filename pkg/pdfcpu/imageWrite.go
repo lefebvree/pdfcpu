@@ -17,16 +17,25 @@ limitations under the License.
 package pdfcpu
 
 import (
+	"bytes"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
-	"io/ioutil"
+	"io"
 	"os"
 
 	"github.com/hhrutter/tiff"
 	"github.com/pdfcpu/pdfcpu/pkg/filter"
 	"github.com/pdfcpu/pdfcpu/pkg/log"
 	"github.com/pkg/errors"
+)
+
+const (
+	pngExt  = ".png"
+	tiffExt = ".tiff"
+	jpgExt  = ".jpg"
+	jpxExt  = ".jpx"
 )
 
 // Errors to be identified.
@@ -249,34 +258,14 @@ func softMask(xRefTable *XRefTable, d *StreamDict, w, h, objNr int) ([]byte, err
 	return sm, nil
 }
 
-func writeImgToJPG(filename string, sd *StreamDict) (string, error) {
-
-	filename += ".jpg"
-	return filename, ioutil.WriteFile(filename, sd.Raw, os.ModePerm)
-}
-
-func writeImgToJPX(filename string, sd *StreamDict) (string, error) {
-
-	filename += ".jpx"
-	return filename, ioutil.WriteFile(filename, sd.Raw, os.ModePerm)
-}
-
-func writeImgToTIFF(filename string, img *image.CMYK) (string, error) {
-
-	filename += ".tif"
-
-	f, err := os.Create(filename)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
+func tiffImgBuffer(img *image.CMYK) (*bytes.Buffer, error) {
 	// TODO softmask handling.
-
-	return filename, tiff.Encode(f, img, nil)
+	var buf bytes.Buffer
+	err := tiff.Encode(&buf, img, nil)
+	return &buf, err
 }
 
-func writeDeviceCMYKToTIFF(filename string, im *PDFImage) (string, error) {
+func tiffDeviceCMYKBuffer(im *PDFImage) (*bytes.Buffer, error) {
 
 	b := im.sd.Content
 
@@ -295,23 +284,16 @@ func writeDeviceCMYKToTIFF(filename string, im *PDFImage) (string, error) {
 		}
 	}
 
-	return writeImgToTIFF(filename, img)
+	return tiffImgBuffer(img)
 }
 
-func writeImgToPNG(filename string, img image.Image) (string, error) {
-
-	filename += ".png"
-
-	f, err := os.Create(filename)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	return filename, png.Encode(f, img)
+func pngImgBuffer(img image.Image) (*bytes.Buffer, error) {
+	var buf bytes.Buffer
+	err := png.Encode(&buf, img)
+	return &buf, err
 }
 
-func writeDeviceGrayToPNG(filename string, im *PDFImage) (string, error) {
+func pngDeviceGrayBuffer(im *PDFImage) (*bytes.Buffer, error) {
 
 	b := im.sd.Content
 
@@ -320,7 +302,7 @@ func writeDeviceGrayToPNG(filename string, im *PDFImage) (string, error) {
 	// Validate buflen.
 	// For streams not using compression there is a trailing 0x0A in addition to the imagebytes.
 	if len(b) < (im.bpc*im.w*im.h+7)/8 {
-		return "", errors.Errorf("writeDeviceGrayToPNG: objNr=%d corrupt image object %v\n", im.objNr, *im.sd)
+		return nil, errors.Errorf("writeDeviceGrayToPNG: objNr=%d corrupt image object %v\n", im.objNr, *im.sd)
 	}
 
 	img := image.NewGray(image.Rect(0, 0, im.w, im.h))
@@ -342,10 +324,10 @@ func writeDeviceGrayToPNG(filename string, im *PDFImage) (string, error) {
 		}
 	}
 
-	return writeImgToPNG(filename, img)
+	return pngImgBuffer(img)
 }
 
-func writeDeviceRGBToPNG(filename string, im *PDFImage) (string, error) {
+func pngDeviceRGBBuffer(im *PDFImage) (*bytes.Buffer, error) {
 
 	b := im.sd.Content
 
@@ -354,7 +336,7 @@ func writeDeviceRGBToPNG(filename string, im *PDFImage) (string, error) {
 	// Validate buflen.
 	// Sometimes there is a trailing 0x0A in addition to the imagebytes.
 	if len(b) < (3*im.bpc*im.w*im.h+7)/8 {
-		return "", errors.Errorf("writeDeviceRGBToPNG: objNr=%d corrupt image object\n", im.objNr)
+		return nil, errors.Errorf("writeDeviceRGBToPNG: objNr=%d corrupt image object\n", im.objNr)
 	}
 
 	// TODO Support bpc and decode.
@@ -372,7 +354,7 @@ func writeDeviceRGBToPNG(filename string, im *PDFImage) (string, error) {
 		}
 	}
 
-	return writeImgToPNG(filename, img)
+	return pngImgBuffer(img)
 }
 
 func ensureDeviceRGBCS(xRefTable *XRefTable, o Object) bool {
@@ -390,14 +372,14 @@ func ensureDeviceRGBCS(xRefTable *XRefTable, o Object) bool {
 	return false
 }
 
-func writeCalRGBToPNG(filename string, im *PDFImage) (string, error) {
+func pngCalRGBBuffer(im *PDFImage) (*bytes.Buffer, error) {
 
 	b := im.sd.Content
 
 	log.Debug.Printf("writeCalRGBToPNG: objNr=%d w=%d h=%d bpc=%d buflen=%d\n", im.objNr, im.w, im.h, im.bpc, len(b))
 
 	if len(b) < (3*im.bpc*im.w*im.h+7)/8 {
-		return "", errors.Errorf("writeCalRGBToPNG: objNr=%d corrupt image object %v\n", im.objNr, *im.sd)
+		return nil, errors.Errorf("writeCalRGBToPNG: objNr=%d corrupt image object %v\n", im.objNr, *im.sd)
 	}
 
 	// Optional int array "Range", length 2*N specifies min,max values of color components.
@@ -413,10 +395,10 @@ func writeCalRGBToPNG(filename string, im *PDFImage) (string, error) {
 			i += 3
 		}
 	}
-	return writeImgToPNG(filename, img)
+	return pngImgBuffer(img)
 }
 
-func writeICCBased(xRefTable *XRefTable, filename string, im *PDFImage, cs Array) (string, error) {
+func iccBasedBuffer(xRefTable *XRefTable, im *PDFImage, cs Array) (buf *bytes.Buffer, ext string, err error) {
 
 	//  Any ICC profile >= ICC.1:2004:10 is sufficient for any PDF version <= 1.7
 	//  If the embedded ICC profile version is newer than the one used by the Reader, substitute with Alternate color space.
@@ -431,7 +413,7 @@ func writeICCBased(xRefTable *XRefTable, filename string, im *PDFImage, cs Array
 	n := *iccProfileStream.IntEntry("N")
 
 	if !IntMemberOf(n, []int{1, 3, 4}) {
-		return "", errors.Errorf("writeICCBasedToPNGFile: objNr=%d, N must be 1,3 or 4, got:%d\n", im.objNr, n)
+		return nil, "", errors.Errorf("writeICCBasedToPNGFile: objNr=%d, N must be 1,3 or 4, got:%d\n", im.objNr, n)
 	}
 
 	// TODO: Transform linear XYZ to RGB according to ICC profile.
@@ -441,27 +423,30 @@ func writeICCBased(xRefTable *XRefTable, filename string, im *PDFImage, cs Array
 	// Validate buflen.
 	// Sometimes there is a trailing 0x0A in addition to the imagebytes.
 	if len(b) < (n*im.bpc*im.w*im.h+7)/8 {
-		return "", errors.Errorf("writeICCBased: objNr=%d corrupt image object %v\n", im.objNr, *im.sd)
+		return nil, "", errors.Errorf("writeICCBased: objNr=%d corrupt image object %v\n", im.objNr, *im.sd)
 	}
 
 	switch n {
 	case 1:
 		// Gray
-		return writeDeviceGrayToPNG(filename, im)
+		buf, err = pngDeviceGrayBuffer(im)
+		ext = pngExt
 
 	case 3:
 		// RGB
-		return writeDeviceRGBToPNG(filename, im)
+		buf, err = pngDeviceRGBBuffer(im)
+		ext = pngExt
 
 	case 4:
 		// CMYK
-		return writeDeviceCMYKToTIFF(filename, im)
+		buf, err = tiffDeviceCMYKBuffer(im)
+		ext = tiffExt
 	}
 
-	return "", nil
+	return buf, ext, err
 }
 
-func writeIndexedRGBToPNG(filename string, im *PDFImage, lookup []byte) (string, error) {
+func pngIndexedRGBBuffer(im *PDFImage, lookup []byte) (*bytes.Buffer, error) {
 
 	b := im.sd.Content
 
@@ -489,10 +474,10 @@ func writeIndexedRGBToPNG(filename string, im *PDFImage, lookup []byte) (string,
 		}
 	}
 
-	return writeImgToPNG(filename, img)
+	return pngImgBuffer(img)
 }
 
-func writeIndexedCMYKToTIFF(filename string, im *PDFImage, lookup []byte) (string, error) {
+func tiffIndexedCMYKBuffer(im *PDFImage, lookup []byte) (*bytes.Buffer, error) {
 
 	b := im.sd.Content
 
@@ -516,36 +501,38 @@ func writeIndexedCMYKToTIFF(filename string, im *PDFImage, lookup []byte) (strin
 		}
 	}
 
-	return writeImgToTIFF(filename, img)
+	return tiffImgBuffer(img)
 }
 
-func writeIndexedNameCS(filename string, im *PDFImage, cs Name, maxInd int, lookup []byte) (string, error) {
+func indexedNameCSBuffer(im *PDFImage, cs Name, maxInd int, lookup []byte) (*bytes.Buffer, string, error) {
 
 	switch cs {
 
 	case DeviceRGBCS:
 
 		if len(lookup) < 3*(maxInd+1) {
-			return "", errors.Errorf("writeIndexedNameCS: objNr=%d, corrupt DeviceRGB lookup table\n", im.objNr)
+			return nil, "", errors.Errorf("writeIndexedNameCS: objNr=%d, corrupt DeviceRGB lookup table\n", im.objNr)
 		}
 
-		return writeIndexedRGBToPNG(filename, im, lookup)
+		buf, err := pngIndexedRGBBuffer(im, lookup)
+		return buf, pngExt, err
 
 	case DeviceCMYKCS:
 
 		if len(lookup) < 4*(maxInd+1) {
-			return "", errors.Errorf("writeIndexedNameCS: objNr=%d, corrupt DeviceCMYK lookup table\n", im.objNr)
+			return nil, "", errors.Errorf("writeIndexedNameCS: objNr=%d, corrupt DeviceCMYK lookup table\n", im.objNr)
 		}
 
-		return writeIndexedCMYKToTIFF(filename, im, lookup)
+		buf, err := tiffIndexedCMYKBuffer(im, lookup)
+		return buf, tiffExt, err
 	}
 
 	log.Info.Printf("writeIndexedNameCS: objNr=%d, unsupported base colorspace %s\n", im.objNr, cs.String())
 
-	return "", ErrUnsupportedColorSpace
+	return nil, "", ErrUnsupportedColorSpace
 }
 
-func writeIndexedArrayCS(xRefTable *XRefTable, filename string, im *PDFImage, csa Array, maxInd int, lookup []byte) (string, error) {
+func indexedArrayCSBuffer(xRefTable *XRefTable, im *PDFImage, csa Array, maxInd int, lookup []byte) (*bytes.Buffer, string, error) {
 
 	b := im.sd.Content
 
@@ -560,12 +547,12 @@ func writeIndexedArrayCS(xRefTable *XRefTable, filename string, im *PDFImage, cs
 		// 1,3 or 4 color components.
 		n := *iccProfileStream.IntEntry("N")
 		if !IntMemberOf(n, []int{1, 3, 4}) {
-			return "", errors.Errorf("writeIndexedArrayCS: objNr=%d, N must be 1,3 or 4, got:%d\n", im.objNr, n)
+			return nil, "", errors.Errorf("writeIndexedArrayCS: objNr=%d, N must be 1,3 or 4, got:%d\n", im.objNr, n)
 		}
 
 		// Validate the lookup table.
 		if len(lookup) < n*(maxInd+1) {
-			return "", errors.Errorf("writeIndexedArrayCS: objNr=%d, corrupt ICCBased lookup table\n", im.objNr)
+			return nil, "", errors.Errorf("writeIndexedArrayCS: objNr=%d, corrupt ICCBased lookup table\n", im.objNr)
 		}
 
 		// TODO: Transform linear XYZ to RGB according to ICC profile.
@@ -585,25 +572,28 @@ func writeIndexedArrayCS(xRefTable *XRefTable, filename string, im *PDFImage, cs
 					i++
 				}
 			}
-			return writeImgToPNG(filename, img)
+			buf, err := pngImgBuffer(img)
+			return buf, pngExt, err
 
 		case 3:
 			// RGB
-			return writeIndexedRGBToPNG(filename, im, lookup)
+			buf, err := pngIndexedRGBBuffer(im, lookup)
+			return buf, pngExt, err
 
 		case 4:
 			// CMYK
 			log.Debug.Printf("writeIndexedArrayCS: CMYK objNr=%d w=%d h=%d bpc=%d buflen=%d\n", im.objNr, im.w, im.h, im.bpc, len(b))
-			return writeIndexedCMYKToTIFF(filename, im, lookup)
+			buf, err := tiffIndexedCMYKBuffer(im, lookup)
+			return buf, tiffExt, err
 		}
 	}
 
 	log.Info.Printf("writeIndexedArrayCS: objNr=%d, unsupported base colorspace %s\n", im.objNr, csa)
 
-	return "", ErrUnsupportedColorSpace
+	return nil, "", ErrUnsupportedColorSpace
 }
 
-func writeIndexed(xRefTable *XRefTable, filename string, im *PDFImage, cs Array) (string, error) {
+func indexedBuffer(xRefTable *XRefTable, im *PDFImage, cs Array) (*bytes.Buffer, string, error) {
 
 	// Identify the base color space.
 	baseCS, _ := xRefTable.Dereference(cs[1])
@@ -615,10 +605,10 @@ func writeIndexed(xRefTable *XRefTable, filename string, im *PDFImage, cs Array)
 	var lookup []byte
 	lookup, err := colorLookupTable(xRefTable, cs[3])
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 	if lookup == nil {
-		return "", errors.Errorf("writeIndexed: objNr=%d IndexedCS with corrupt lookup table %s\n", im.objNr, cs)
+		return nil, "", errors.Errorf("writeIndexed: objNr=%d IndexedCS with corrupt lookup table %s\n", im.objNr, cs)
 	}
 	//fmt.Printf("lookup: \n%s\n", hex.Dump(l))
 
@@ -630,33 +620,31 @@ func writeIndexed(xRefTable *XRefTable, filename string, im *PDFImage, cs Array)
 	// The image data is a sequence of index values for pixels.
 	// Sometimes there is a trailing 0x0A.
 	if len(b) < (im.bpc*im.w*im.h+7)/8 {
-		return "", errors.Errorf("writeIndexed: objNr=%d corrupt image object %v\n", im.objNr, *im.sd)
+		return nil, "", errors.Errorf("writeIndexed: objNr=%d corrupt image object %v\n", im.objNr, *im.sd)
 	}
 
 	switch cs := baseCS.(type) {
 	case Name:
-		return writeIndexedNameCS(filename, im, cs, maxInd.Value(), lookup)
+		return indexedNameCSBuffer(im, cs, maxInd.Value(), lookup)
 
 	case Array:
-		return writeIndexedArrayCS(xRefTable, filename, im, cs, maxInd.Value(), lookup)
+		return indexedArrayCSBuffer(xRefTable, im, cs, maxInd.Value(), lookup)
 	}
 
-	return "", nil
+	return nil, "", nil
 }
 
-func writeFlateEncodedImage(xRefTable *XRefTable, filename string, sd *StreamDict, objNr int) (string, error) {
+func flateEncodedImageBuffer(xRefTable *XRefTable, sd *StreamDict, objNr int) (buf *bytes.Buffer, ext string, err error) {
 
 	pdfImage, err := pdfImage(xRefTable, sd, objNr)
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 
 	o, err := xRefTable.DereferenceDictEntry(sd.Dict, "ColorSpace")
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
-
-	var fn string
 
 	switch cs := o.(type) {
 
@@ -664,13 +652,16 @@ func writeFlateEncodedImage(xRefTable *XRefTable, filename string, sd *StreamDic
 		switch cs {
 
 		case DeviceGrayCS:
-			fn, err = writeDeviceGrayToPNG(filename, pdfImage)
+			buf, err = pngDeviceGrayBuffer(pdfImage)
+			ext = pngExt
 
 		case DeviceRGBCS:
-			fn, err = writeDeviceRGBToPNG(filename, pdfImage)
+			buf, err = pngDeviceRGBBuffer(pdfImage)
+			ext = pngExt
 
 		case DeviceCMYKCS:
-			fn, err = writeDeviceCMYKToTIFF(filename, pdfImage)
+			buf, err = tiffDeviceCMYKBuffer(pdfImage)
+			ext = tiffExt
 
 		default:
 			log.Info.Printf("writeFlateEncodedImage: objNr=%d, unsupported name colorspace %s\n", objNr, cs.String())
@@ -683,13 +674,14 @@ func writeFlateEncodedImage(xRefTable *XRefTable, filename string, sd *StreamDic
 		switch csn {
 
 		case CalRGBCS:
-			fn, err = writeCalRGBToPNG(filename, pdfImage)
+			buf, err = pngCalRGBBuffer(pdfImage)
+			ext = pngExt
 
 		case ICCBasedCS:
-			fn, err = writeICCBased(xRefTable, filename, pdfImage, cs)
+			buf, ext, err = iccBasedBuffer(xRefTable, pdfImage, cs)
 
 		case IndexedCS:
-			fn, err = writeIndexed(xRefTable, filename, pdfImage, cs)
+			buf, ext, err = indexedBuffer(xRefTable, pdfImage, cs)
 
 		default:
 			log.Info.Printf("writeFlateEncodedImage: objNr=%d, unsupported array colorspace %s\n", objNr, csn)
@@ -699,32 +691,52 @@ func writeFlateEncodedImage(xRefTable *XRefTable, filename string, sd *StreamDic
 
 	}
 
-	return fn, err
+	return buf, ext, err
 }
 
 // WriteImage writes a PDF image object to disk.
-func WriteImage(xRefTable *XRefTable, filename string, sd *StreamDict, objNr int) (fileName string, err error) {
+func WriteImage(xRefTable *XRefTable, filename string, sd *StreamDict, objNr int) (string, error) {
+	buf, ext, err := ImageBuffer(xRefTable, sd, objNr)
+	if err != nil {
+		return "", err
+	}
+
+	fn := filename + ext
+	f, err := os.OpenFile(fn, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.ModePerm)
+	if err != nil {
+		return fn, err
+	}
+
+	_, err = io.Copy(f, buf)
+	if err1 := f.Close(); err == nil {
+		err = err1
+	}
+
+	return fn, err
+}
+
+// ImageBuffer converts a PDF image to a bytes.Buffer and returns it with its extension.
+func ImageBuffer(xRefTable *XRefTable, sd *StreamDict, objNr int) (buf *bytes.Buffer, ext string, err error) {
 
 	switch sd.FilterPipeline[0].Name {
 
 	case filter.Flate, filter.CCITTFax:
 		// If color space is CMYK then write .tif else write .png
-		fn, err := writeFlateEncodedImage(xRefTable, filename, sd, objNr)
+		buf, ext, err := flateEncodedImageBuffer(xRefTable, sd, objNr)
 		if err != nil {
 			if err == ErrUnsupportedColorSpace {
 				log.Info.Printf("Image obj#%d uses an unsupported color space. Please see the logfile for details.\n", objNr)
 				err = nil
 			}
 		}
-		return fn, err
+		return buf, ext, err
 
 	case filter.DCT:
-		return writeImgToJPG(filename, sd)
-
+		return bytes.NewBuffer(sd.Raw), jpgExt, nil
 	case filter.JPX:
-		return writeImgToJPX(filename, sd)
-
+		return bytes.NewBuffer(sd.Raw), jpxExt, nil
 	}
 
-	return "", nil
+	err = fmt.Errorf("unknown image filter")
+	return
 }
